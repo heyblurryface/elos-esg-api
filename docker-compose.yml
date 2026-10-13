@@ -1,0 +1,91 @@
+# =============================================================================
+# Elos ESG API (Kaizen) - orquestração com Docker Compose
+#
+# O mesmo arquivo é usado nos 3 cenários, mudando só o arquivo .env:
+#   - local:     docker compose up -d --build              (usa .env)
+#   - staging:   docker compose -p elos-staging up -d      (.env gerado pelo pipeline)
+#   - produção:  docker compose -p elos-production up -d   (.env gerado pelo pipeline)
+#
+# O nome do projeto (-p) separa containers, rede e volume de cada ambiente,
+# então staging e produção rodam na mesma VM sem se enxergar.
+# =============================================================================
+
+name: elos-local   # sobrescrito por -p nos ambientes staging/produção
+
+services:
+
+  # ---------------------------------------------------------------------------
+  # Banco de dados: Oracle Database 23ai Free
+  # ---------------------------------------------------------------------------
+  oracle-db:
+    image: gvenzl/oracle-free:23-slim
+    restart: unless-stopped
+    environment:
+      ORACLE_PASSWORD: ${ORACLE_PASSWORD:?defina ORACLE_PASSWORD no .env}
+      APP_USER: ${APP_DB_USER:-kaizen}
+      APP_USER_PASSWORD: ${APP_DB_PASSWORD:?defina APP_DB_PASSWORD no .env}
+    # Sem "ports": o banco só é acessível pela rede interna "backend".
+    # Para consultar: docker compose exec oracle-db sqlplus kaizen/<senha>@FREEPDB1
+    volumes:
+      - oracle-data:/opt/oracle/oradata
+    networks:
+      - backend
+    healthcheck:
+      test: ["CMD", "healthcheck.sh"]
+      interval: 15s
+      timeout: 10s
+      retries: 30
+      start_period: 90s
+    logging: &default-logging
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # ---------------------------------------------------------------------------
+  # API ASP.NET Core 8
+  # ---------------------------------------------------------------------------
+  api:
+    image: ${API_IMAGE:-elos-esg-api:local}
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        APP_VERSION: ${APP_VERSION:-local}
+    restart: unless-stopped
+    depends_on:
+      oracle-db:
+        condition: service_healthy
+    environment:
+      ASPNETCORE_ENVIRONMENT: ${ASPNETCORE_ENVIRONMENT:-Development}
+      ASPNETCORE_URLS: http://+:8080
+      APP_VERSION: ${APP_VERSION:-local}
+      # Sobrescreve o appsettings.json: aponta para o serviço "oracle-db" pela rede interna
+      ConnectionStrings__OracleConnection: "User Id=${APP_DB_USER:-kaizen};Password=${APP_DB_PASSWORD};Data Source=oracle-db:1521/FREEPDB1;"
+      Jwt__SecretKey: ${JWT_SECRET:?defina JWT_SECRET no .env}
+      Jwt__ExpiresMinutes: ${JWT_EXPIRES_MINUTES:-120}
+    ports:
+      - "${API_PORT:-8080}:8080"
+    networks:
+      - backend
+      - frontend
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 120s
+    logging: *default-logging
+
+networks:
+  # Rede interna: só API <-> banco. "internal" impede saída para a internet.
+  backend:
+    driver: bridge
+    internal: true
+  # Rede de borda: por onde a porta da API é publicada.
+  frontend:
+    driver: bridge
+
+volumes:
+  # Persistência dos dados do Oracle (sobrevive a deploys e restarts)
+  oracle-data:

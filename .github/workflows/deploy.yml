@@ -1,0 +1,142 @@
+# =============================================================================
+# Workflow reutilizável de deploy (chamado pelo ci-cd.yml para staging e produção)
+#
+# Faz o deploy via SSH numa VM Linux (Azure) com Docker:
+#   1. gera o .env do ambiente com os secrets do environment do GitHub
+#   2. copia docker-compose.yml + .env + script para ~/elos-esg/<ambiente> na VM
+#   3. executa o script remoto (pull da imagem + docker compose up --wait)
+#   4. roda o smoke test a partir do runner (acesso externo real)
+#
+# Secrets/variables usados:
+#   repo:        VM_SSH_KEY (secret), VM_HOST e VM_USER (variables)
+#   environment: ORACLE_PASSWORD, APP_DB_PASSWORD, JWT_SECRET (secrets)
+# =============================================================================
+name: Deploy (reutilizável)
+
+on:
+  workflow_call:
+    inputs:
+      environment:
+        description: "staging ou production"
+        required: true
+        type: string
+      api_port:
+        description: "porta publicada da API na VM"
+        required: true
+        type: string
+      image:
+        description: "imagem completa no GHCR"
+        required: true
+        type: string
+      version:
+        description: "SHA curto do commit"
+        required: true
+        type: string
+
+jobs:
+  deploy:
+    name: Deploy ${{ inputs.environment }}
+    runs-on: ubuntu-latest
+    environment:
+      name: ${{ inputs.environment }}
+      url: http://${{ vars.VM_HOST }}:${{ inputs.api_port }}/swagger
+    concurrency:
+      group: deploy-${{ inputs.environment }}
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      packages: read
+    env:
+      VM_HOST: ${{ vars.VM_HOST }}
+      VM_USER: ${{ vars.VM_USER || 'azureuser' }}
+      REMOTE_DIR: elos-esg/${{ inputs.environment }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Conferir configuração
+        env:
+          HAS_KEY: ${{ secrets.VM_SSH_KEY != '' }}
+          HAS_DB: ${{ secrets.APP_DB_PASSWORD != '' }}
+        run: |
+          [[ -n "$VM_HOST" ]] || { echo "::error::variable VM_HOST não configurada"; exit 1; }
+          [[ "$HAS_KEY" == "true" ]] || { echo "::error::secret VM_SSH_KEY não configurado"; exit 1; }
+          [[ "$HAS_DB" == "true" ]] || { echo "::error::secrets do environment ${{ inputs.environment }} não configurados"; exit 1; }
+          echo "Destino: $VM_USER@$VM_HOST:~/$REMOTE_DIR (porta ${{ inputs.api_port }})"
+
+      - name: Preparar chave SSH
+        env:
+          SSH_KEY: ${{ secrets.VM_SSH_KEY }}
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh-keyscan -H "$VM_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+          cat > ~/.ssh/config <<EOF
+          Host vm
+            HostName ${VM_HOST}
+            User ${VM_USER}
+            IdentityFile ~/.ssh/deploy_key
+            StrictHostKeyChecking accept-new
+            ConnectTimeout 20
+            ServerAliveInterval 30
+          EOF
+          chmod 600 ~/.ssh/config
+          ssh vm "echo conectado em \$(hostname)"
+
+      - name: Gerar .env do ambiente
+        env:
+          ORACLE_PASSWORD: ${{ secrets.ORACLE_PASSWORD }}
+          APP_DB_PASSWORD: ${{ secrets.APP_DB_PASSWORD }}
+          JWT_SECRET: ${{ secrets.JWT_SECRET }}
+        run: |
+          if [[ "${{ inputs.environment }}" == "production" ]]; then
+            ASPNET_ENV=Production; JWT_MIN=60
+          else
+            ASPNET_ENV=Staging; JWT_MIN=120
+          fi
+          umask 077
+          cat > deploy.env <<EOF
+          COMPOSE_PROJECT_NAME=elos-${{ inputs.environment }}
+          ASPNETCORE_ENVIRONMENT=${ASPNET_ENV}
+          API_PORT=${{ inputs.api_port }}
+          API_IMAGE=${{ inputs.image }}
+          APP_VERSION=${{ inputs.version }}
+          ORACLE_PASSWORD=${ORACLE_PASSWORD}
+          APP_DB_USER=kaizen
+          APP_DB_PASSWORD=${APP_DB_PASSWORD}
+          JWT_SECRET=${JWT_SECRET}
+          JWT_EXPIRES_MINUTES=${JWT_MIN}
+          EOF
+          sed -i 's/^[[:space:]]*//' deploy.env
+          echo ".env gerado (valores sensíveis mascarados):"
+          sed -E 's/(PASSWORD|SECRET)=.*/\1=***/' deploy.env
+
+      - name: Copiar arquivos para a VM
+        run: |
+          ssh vm "mkdir -p ~/${REMOTE_DIR}"
+          scp docker-compose.yml scripts/remote-deploy.sh "vm:${REMOTE_DIR}/"
+          scp deploy.env "vm:${REMOTE_DIR}/.env"
+          rm -f deploy.env
+
+      - name: Deploy com Docker Compose
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          printf '%s' "$GHCR_TOKEN" | ssh vm "bash ~/${REMOTE_DIR}/remote-deploy.sh ${{ github.actor }}"
+
+      - name: Smoke test (${{ inputs.environment }})
+        run: |
+          chmod +x scripts/smoke-test.sh
+          ./scripts/smoke-test.sh "http://$VM_HOST:${{ inputs.api_port }}" "${{ inputs.version }}"
+
+      - name: Resumo do deploy
+        if: always()
+        run: |
+          {
+            echo "### Deploy ${{ inputs.environment }}"
+            echo "- Versão: \`${{ inputs.version }}\`"
+            echo "- Imagem: \`${{ inputs.image }}\`"
+            echo "- URL: http://$VM_HOST:${{ inputs.api_port }}/swagger"
+            echo "- Health: http://$VM_HOST:${{ inputs.api_port }}/health"
+          } >> "$GITHUB_STEP_SUMMARY"

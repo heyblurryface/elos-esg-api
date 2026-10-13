@@ -1,0 +1,13 @@
+Salve aqui os prints com estes nomes (o README.md ja aponta para eles):
+
+01-pipeline-visao-geral.png   Actions: execucao com os 4 jobs verdes
+02-build-testes.png           Job "Build e testes" (testes aprovados)
+03-imagem-ghcr.png            Job "Imagem Docker" ou pagina do pacote no GHCR
+04-deploy-staging.png         Job "Deploy staging" com smoke test OK
+05-aprovacao-producao.png     Tela "Review deployments"
+06-deploy-producao.png        Job "Deploy production" com smoke test OK
+07-staging-health.png         http://<IP>:8081/health  ("environment":"Staging")
+08-producao-health.png        http://<IP>:8080/health  ("environment":"Production")
+09-producao-swagger.png       Swagger de producao com chamada autenticada (200)
+10-docker-ps-vm.png           ssh na VM + docker ps (elos-staging e elos-production)
+11-environments.png           Pagina de Environments/Deployments do GitHub
