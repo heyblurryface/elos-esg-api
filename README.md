@@ -4,6 +4,8 @@
 
 Aluno: **Gabriel Bueno Barba** | RM 572765 | Turma 2TDSOA
 
+Repositório: https://github.com/heyblurryface/elos-esg-api
+
 O Elos ESG é uma plataforma que diagnostica e acompanha a maturidade ESG de empresas e fornecedores. O núcleo técnico é a API de diagnóstico que eu construí na fase anterior como **Kaizen API** (ASP.NET Core 8 + Oracle): o consultor registra as respostas de um questionário de 32 perguntas em 5 pilares de Governança e Compliance, e a API calcula sozinha o score de cada pilar, classifica o nível de maturidade, gera a recomendação e atualiza o status da avaliação.
 
 Neste desafio a API foi preparada para rodar como num ambiente de produção real:
@@ -126,7 +128,13 @@ Precisa: conta GitHub, conta **Azure for Students** e o repositório **público*
    bash infra/azure-setup.sh
    ```
 
-   Cria o resource group, a VM Ubuntu (Standard_B2ms) com Docker instalado via cloud-init, libera as portas 8080/8081 e gera uma chave SSH só para o pipeline. Se a região não aceitar a VM, rode com outra: `LOCATION=eastus2 bash infra/azure-setup.sh`.
+   Cria o resource group, a VM Ubuntu com Docker instalado via cloud-init, libera as portas 8080/8081 e gera uma chave SSH só para o pipeline.
+
+   Na assinatura Azure for Students só algumas regiões são liberadas (dá pra ver com `az policy assignment list --query "[].parameters.listOfAllowedLocations.value" -o tsv`). Neste projeto foi usada a região **Chile Central** com a VM **Standard_B2s_v2** (2 vCPU, 8 GB):
+
+   ```bash
+   RG=rg-elos-chilecentral LOCATION=chilecentral VM_SIZE=Standard_B2s_v2 bash infra/azure-setup.sh
+   ```
 3. **Configure o GitHub** (no mesmo Cloud Shell):
 
    ```bash
@@ -274,10 +282,10 @@ As imagens ficam em `docs/prints/`.
 **Deploy em produção + smoke test**
 ![Deploy produção](docs/prints/06-deploy-producao.png)
 
-**Staging funcionando: http://&lt;IP&gt;:8081/health**
+**Staging funcionando: http://68.211.144.197:8081/health**
 ![Staging health](docs/prints/07-staging-health.png)
 
-**Produção funcionando: http://&lt;IP&gt;:8080/health**
+**Produção funcionando: http://68.211.144.197:8080/health**
 ![Produção health](docs/prints/08-producao-health.png)
 
 **Swagger da produção com chamada autenticada**
@@ -291,8 +299,14 @@ As imagens ficam em `docs/prints/`.
 
 Links dos ambientes (enquanto a VM estiver ligada):
 
-- Staging: `http://<IP_DA_VM>:8081/swagger`
-- Produção: `http://<IP_DA_VM>:8080/swagger`
+| Ambiente | Swagger | Health |
+|----------|---------|--------|
+| Staging | http://68.211.144.197:8081/swagger | http://68.211.144.197:8081/health |
+| Produção | http://68.211.144.197:8080/swagger | http://68.211.144.197:8080/health |
+
+Execução validada: **CI/CD - Elos ESG API #2** (commit `2b0edc4`). 26 testes aprovados, imagem `ghcr.io/heyblurryface/elos-esg-api:sha-2b0edc4`, deploy em staging (1m43s) e, após aprovação manual, em produção (1m16s), os dois com smoke test OK.
+
+Documentação técnica completa com todas as evidências: [`docs/Elos_ESG_Desafio_DevOps.pdf`](docs/Elos_ESG_Desafio_DevOps.pdf).
 
 ---
 
